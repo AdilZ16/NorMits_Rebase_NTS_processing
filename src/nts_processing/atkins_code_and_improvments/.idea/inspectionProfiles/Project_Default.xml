@@ -1,0 +1,66 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="MarkdownUnresolvedFileReference" enabled="false" level="WARNING" enabled_by_default="false" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <value>
+          <list size="3">
+            <item index="0" class="java.lang.String" itemvalue="geopandas" />
+            <item index="1" class="java.lang.String" itemvalue="pandas" />
+            <item index="2" class="java.lang.String" itemvalue="mlxtend" />
+          </list>
+        </value>
+      </option>
+    </inspection_tool>
+    <inspection_tool class="PyPep8Inspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <option name="ignoredErrors">
+        <list>
+          <option value="E501" />
+          <option value="W605" />
+          <option value="E402" />
+          <option value="E128" />
+          <option value="E303" />
+          <option value="E266" />
+          <option value="E262" />
+        </list>
+      </option>
+    </inspection_tool>
+    <inspection_tool class="PyPep8NamingInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <option name="ignoredErrors">
+        <list>
+          <option value="N806" />
+          <option value="N803" />
+          <option value="N801" />
+          <option value="N814" />
+        </list>
+      </option>
+    </inspection_tool>
+    <inspection_tool class="PyProtectedMemberInspection" enabled="false" level="WEAK WARNING" enabled_by_default="false" />
+    <inspection_tool class="PyStatementEffectInspection" enabled="false" level="WARNING" enabled_by_default="false" />
+    <inspection_tool class="PyTypeCheckerInspection" enabled="false" level="WARNING" enabled_by_default="false" />
+    <inspection_tool class="PyUnresolvedReferencesInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredIdentifiers">
+        <list>
+          <option value="path_years" />
+          <option value="report_home" />
+          <option value="export_paths" />
+          <option value="report_paths" />
+          <option value="segment_names" />
+          <option value="segments_and_names" />
+          <option value="segments" />
+          <option value="col_name" />
+          <option value="n_zones" />
+          <option value="sector_data" />
+          <option value="from_zone_col" />
+          <option value="to_zone_col" />
+          <option value="val_col" />
+          <option value="p_col" />
+          <option value="m_col" />
+          <option value="ca_col" />
+          <option value="bool.any" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>
