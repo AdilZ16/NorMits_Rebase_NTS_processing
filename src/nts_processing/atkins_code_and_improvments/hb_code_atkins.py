@@ -43,7 +43,7 @@ def process_data_hb(data, output_folder):
     df_trip_join = pd.merge(df, df_total, left_on=['purpose', 'tfn_at', 'hh_type'], right_on=['purpose', 'tfn_at', 'hh_type'], how='inner')
 
     df_trip_join['split'] = df_trip_join['trips'] / df_trip_join['total_trips']
-    df_trip_join = df_trip_join[['purpose', 'tfn_at', 'hh_type', 'mode', 'period', 'split', 'trips', 'total_trips','split_method']]
+    df_trip_join = df_trip_join[['purpose', 'tfn_at', 'hh_type', 'mode', 'period', 'split', 'trips', 'total_trips', 'split_method']]
     df_trip_join['mode_period'] = df_trip_join['mode'].astype(str) + '_' + df_trip_join['period'].astype(str)
 
     df_trip_join = df_trip_join.fillna(0)  # ensure that the target variable y (splits) always has a value
