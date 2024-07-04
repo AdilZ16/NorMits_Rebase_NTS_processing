@@ -11,7 +11,9 @@ import pymc as pm
 import matplotlib.pyplot as plt
 import time
 from tqdm.auto import tqdm
-
+import os
+import joblib
+import arviz as az
 
 # pylint: disable=import-error,wrong-import-position
 # Local imports here
@@ -84,6 +86,10 @@ def generate_priors(data):
     start_time = time.time()
 
     with pm.Model() as trip_model:
+
+        # mutable data used as batching the predictions is done due to memory issues, mutable data needed
+        trips_data = pm.MutableData('trips_data', data['trips'])
+
         # Hyper-priors (mean)
         sigma_purpose_hc = pm.HalfCauchy('sigma_purpose', beta=5)
         sigma_tfn_at_hc = pm.HalfCauchy('sigma_tfn_at', beta=5)
@@ -114,12 +120,12 @@ def generate_priors(data):
         alpha = pm.Gamma('alpha', alpha=0.01, beta=0.01)
 
         # Likelihood (sampling distribution) of observations
-        trips = pm.NegativeBinomial('trips', mu=theta, alpha=alpha, observed=data['trips'])
+        trips = pm.NegativeBinomial('trips', mu=theta, alpha=alpha, observed=trips_data)
 
     with trip_model:
         # Using NUTS sampler, uses trips likelihood, using metropolis for speed instead of nuts
         print('sampling process beginning')
-        trace = pm.sample(500, tune=250, cores=4, random_seed=42, progressbar=True, step=pm.Metropolis())
+        trace = pm.sample(200, tune=100, cores=8, random_seed=42, progressbar=True, step=pm.Metropolis())
         # try this instead, can be faster. variational inference instead of mcmc
         #approx = pm.fit(n=50000, method='advi')
         #trace = approx.sample(500)
@@ -129,37 +135,80 @@ def generate_priors(data):
     return trip_model, trace
 
 
-
 def predict_model_hierarchical_bayesian_model(columns_to_keep,
                                               data_to_predict,
                                               training_data,
                                               trip_model,
                                               trace,
-                                              output_folder):
+                                              output_folder,
+                                              batch_size=100):
     print('predictions being made')
     for var in columns_to_keep:
-        data_to_predict[var] = pd.Categorical(data_to_predict[var], categories=training_data[var].cat.categories)
+        data_to_predict[var] = pd.Categorical(data_to_predict[var],
+                                              categories=training_data[var].cat.categories)
 
-    # Make predictions
-    with trip_model:
-        pred_samples = pm.sample_posterior_predictive(trace, var_names=['trips'])
+    predictions = []
+    lower_cis = []
+    upper_cis = []
+    # working in batches due to allocating memory error
+    for i in range(0, len(data_to_predict), batch_size):
+        batch = data_to_predict.iloc[i:i + batch_size]
 
-    # Extract predicted trips
-    predicted_trips = pred_samples['trips']
+        with trip_model:
+            # pm.set_data to update the observed data for this batch
+            pm.set_data({"trips": batch['trips']})
 
-    # Calculate mean predictions and credible intervals
-    predictions = predicted_trips.mean(axis=0)
-    credible_intervals = np.percentile(predicted_trips, [2.5, 97.5], axis=0)
+            # Sample from the posterior predictive distribution
+            pred_samples = pm.sample_posterior_predictive(trace, var_names=['trips'])
 
-    # Add predictions to new_data
+        predicted_trips = pred_samples['trips']
+        batch_predictions = predicted_trips.mean(axis=0)
+        batch_credible_intervals = np.percentile(predicted_trips, [2.5, 97.5], axis=0)
+
+        predictions.extend(batch_predictions)
+        lower_cis.extend(batch_credible_intervals[0])
+        upper_cis.extend(batch_credible_intervals[1])
+
     data_to_predict['predicted_trips'] = predictions
-    data_to_predict['lower_ci'] = credible_intervals[0]
-    data_to_predict['upper_ci'] = credible_intervals[1]
+    data_to_predict['lower_ci'] = lower_cis
+    data_to_predict['upper_ci'] = upper_cis
 
     output_filename = 'predictions.csv'
     output_path = os.path.join(output_folder, output_filename)
-    predictions.to_csv(output_path, index=False)
+    data_to_predict.to_csv(output_path, index=False)
     print('-------------------------------------------------------------')
     print(f"predictions exported to: {output_path}")
 
-    return predictions, credible_intervals
+    return data_to_predict[['predicted_trips', 'lower_ci', 'upper_ci']]
+
+
+def save_model_and_parameters(model, trace, output_folder):
+    model_file_path = output_folder / 'pymc_model.pkl'
+    trace_file_path = output_folder / 'pymc_trace.joblib'
+
+    joblib.dump(model, model_file_path)
+    joblib.dump(trace, trace_file_path)
+
+    print(f"Model saved to: {model_file_path}")
+    print(f"Trace saved to: {trace_file_path}")
+
+
+def load_model_and_parameters(output_folder):
+    model_file_path = output_folder / 'pymc_model.pkl'
+    trace_file_path = output_folder / 'pymc_trace.joblib'
+
+    if model_file_path.exists():
+        model = joblib.load(model_file_path)
+        print(f"Model loaded from: {model_file_path}")
+    else:
+        model = None
+        print(f"Model file not found at: {model_file_path}")
+
+    if trace_file_path.exists():
+        trace = joblib.load(trace_file_path)
+        print(f"Trace loaded from: {trace_file_path}")
+    else:
+        trace = None
+        print(f"Trace file not found at: {trace_file_path}")
+
+    return model, trace

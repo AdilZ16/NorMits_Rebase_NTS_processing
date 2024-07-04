@@ -10,7 +10,9 @@ import warnings
 from src.nts_processing.AZ_code_MTS_model.process_cb_functions import (process_cb_data,
                                                                        process_data_for_hierarchical_bayesian_model,
                                                                        generate_priors,
-                                                                       predict_model_hierarchical_bayesian_model)
+                                                                       predict_model_hierarchical_bayesian_model,
+                                                                       load_model_and_parameters,
+                                                                       save_model_and_parameters)
 
 warnings.filterwarnings("ignore")
 
@@ -23,6 +25,14 @@ def main(params):
 
     df, predict_data, training_data = process_data_for_hierarchical_bayesian_model(df=df,
                                                                                    columns_to_keep=params.columns_to_keep)
+
+    model, trace = load_model_and_parameters(output_folder=params.output_folder)
+
+    if model is None or trace is None:
+        model, trace = generate_priors(data=training_data)
+        save_model_and_parameters(model=model,
+                                  trace=trace,
+                                  output_folder=params.output_folder)
 
     model, trace = generate_priors(data=training_data)
 
