@@ -23,3 +23,5 @@ class NTS_mts_inputs_AZ_model(BaseConfig):
     data_cb: Optional[Path] = None
     columns_to_keep: Optional[List[str]] = None
     output_folder: Optional[Path] = None
+    reduce_data_size: Optional[str] = None
+    target_column: Optional[str] = None

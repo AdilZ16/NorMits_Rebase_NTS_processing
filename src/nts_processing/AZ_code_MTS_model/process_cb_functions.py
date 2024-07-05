@@ -5,11 +5,14 @@ Original author: Adil Zaheer
 """
 import os
 
+import dill
 import numpy as np
 import pandas as pd
 import pymc as pm
 import matplotlib.pyplot as plt
 import time
+
+from sklearn.model_selection import StratifiedShuffleSplit
 from tqdm.auto import tqdm
 import os
 import joblib
@@ -29,7 +32,6 @@ def process_cb_data(data, columns_to_keep, output_folder):
     df = pd.read_csv(data)
     df = df[columns_to_keep]
     df.columns = [str(col).strip() for col in df.columns]
-    print()
 
     # Individual [at, hh] #AK / #AZ
     df = df[df['period'] != 0]
@@ -67,16 +69,32 @@ def process_cb_data(data, columns_to_keep, output_folder):
     return df_trip_join, audit_df
 
 
-def process_data_for_hierarchical_bayesian_model(df, columns_to_keep):
+def process_data_for_hierarchical_bayesian_model(df, columns_to_keep, reduce_data_size, target_column, output_folder):
     print('processing data to model specifications')
+
+    if reduce_data_size is not None:
+        print('Reducing data size')
+        df = create_hybrid_sample(df, output_folder=output_folder)
 
     for var in columns_to_keep:
         # unique values and create new categorical type
         unique_values = df[var].unique()
         df[var] = pd.Categorical(df[var], categories=unique_values)
 
-    predict_data = df[df['split_method'] == 'tbd'].copy()
-    training_data = df[df['split_method'] != 'tbd'].copy()
+    predict_data = df[df['split_method'] == 'TBD'].copy()
+    training_data = df[df['split_method'] != 'TBD'].copy()
+
+    output_filename = 'predict_data.csv'
+    output_path = os.path.join(output_folder, output_filename)
+    predict_data.to_csv(output_path, index=False)
+    print('-------------------------------------------------------------')
+    print(f"predict_data exported to: {output_path}")
+
+    output_filename = 'training_data.csv'
+    output_path = os.path.join(output_folder, output_filename)
+    training_data.to_csv(output_path, index=False)
+    print('-------------------------------------------------------------')
+    print(f"training_data exported to: {output_path}")
 
     return df, predict_data, training_data
 
@@ -135,59 +153,124 @@ def generate_priors(data):
     return trip_model, trace
 
 
-def predict_model_hierarchical_bayesian_model(columns_to_keep,
-                                              data_to_predict,
-                                              training_data,
-                                              trip_model,
-                                              trace,
-                                              output_folder,
-                                              batch_size=100):
-    print('predictions being made')
-    for var in columns_to_keep:
-        data_to_predict[var] = pd.Categorical(data_to_predict[var],
-                                              categories=training_data[var].cat.categories)
+'''def predict_model_hierarchical_bayesian_model(data_to_predict, trip_model, trace, target_column, output_folder):
+    print('Making predictions')
 
-    predictions = []
-    lower_cis = []
-    upper_cis = []
-    # working in batches due to allocating memory error
-    for i in range(0, len(data_to_predict), batch_size):
-        batch = data_to_predict.iloc[i:i + batch_size]
 
-        with trip_model:
-            # pm.set_data to update the observed data for this batch
-            pm.set_data({"trips": batch['trips']})
+    with trip_model:
+        # make predictions
+        pm.set_data({'trips_data': data_to_predict['trips']})
+        posterior_pred = pm.sample_posterior_predictive(trace, var_names=[target_column])
 
-            # Sample from the posterior predictive distribution
-            pred_samples = pm.sample_posterior_predictive(trace, var_names=['trips'])
+    print(type(posterior_pred))
+    print(dir(posterior_pred))
 
-        predicted_trips = pred_samples['trips']
-        batch_predictions = predicted_trips.mean(axis=0)
-        batch_credible_intervals = np.percentile(predicted_trips, [2.5, 97.5], axis=0)
+    # Extract predictions
+    pred_data = posterior_pred.posterior_predictive[target_column].values
+    print("Shape of pred_data:", pred_data.shape)
 
-        predictions.extend(batch_predictions)
-        lower_cis.extend(batch_credible_intervals[0])
-        upper_cis.extend(batch_credible_intervals[1])
+    # Calculate stats across samples
+    predictions = pred_data.mean(axis=(0, 1))
+    lower_ci = np.percentile(pred_data, 2.5, axis=(0, 1))
+    upper_ci = np.percentile(pred_data, 97.5, axis=(0, 1))
 
-    data_to_predict['predicted_trips'] = predictions
-    data_to_predict['lower_ci'] = lower_cis
-    data_to_predict['upper_ci'] = upper_cis
+    print("Shape of predictions:", predictions.shape)
+    print("Length of data_to_predict:", len(data_to_predict))
+
+    if len(predictions) != len(data_to_predict):
+        raise ValueError(
+            f"Mismatch in prediction length: got {len(predictions)} predictions for {len(data_to_predict)} data points"
+        )
+
+    data_to_predict[f'predicted_{target_column}'] = predictions
+    data_to_predict['lower_ci'] = lower_ci
+    data_to_predict['upper_ci'] = upper_ci
 
     output_filename = 'predictions.csv'
     output_path = os.path.join(output_folder, output_filename)
     data_to_predict.to_csv(output_path, index=False)
     print('-------------------------------------------------------------')
-    print(f"predictions exported to: {output_path}")
+    print(f"Predictions exported to: {output_path}")
 
-    return data_to_predict[['predicted_trips', 'lower_ci', 'upper_ci']]
+    return data_to_predict'''
+
+
+def predict_model_hierarchical_bayesian_model(data_to_predict, trip_model, trace,
+                                              target_column, output_folder):
+
+
+    with trip_model:
+        print('Model variables:', trip_model.named_vars.keys())
+        print("Keys in the trace object:")
+        print(trace.keys())
+        print("\nSummary of the trace object:")
+        print(trace)
+
+        print('Updating model data context for prediction')
+        pm.set_data({
+            'trips_data': data_to_predict['trips'],
+
+            'sigma_purpose': trace['sigma_purpose'].mean(),
+            'beta_purpose': trace['beta_purpose'].mean(axis=0)[data_to_predict['purpose'].cat.codes],
+
+            'sigma_tfn_at': trace['sigma_tfn_at'].mean(),
+            'beta_tfn_at': trace['beta_tfn_at'].mean(axis=0)[data_to_predict['tfn_at'].cat.codes],
+
+            'sigma_hh_type': trace['sigma_hh_type'].mean(),
+            'beta_hh_type': trace['beta_hh_type'].mean(axis=0)[data_to_predict['hh_type'].cat.codes],
+
+            'sigma_mode': trace['sigma_mode'].mean(),
+            'beta_mode': trace['beta_mode'].mean(axis=0)[data_to_predict['mode'].cat.codes],
+
+            'sigma_period': trace['sigma_period'].mean(),
+            'beta_period': trace['beta_period'].mean(axis=0)[data_to_predict['period'].cat.codes],
+        })
+
+        # Debug
+        print("Shape of data_to_predict:", data_to_predict.shape)
+        print("Unique values in purpose:", data_to_predict['purpose'].unique())
+        print("Unique values in tfn_at:", data_to_predict['tfn_at'].unique())
+        print("Unique values in hh_type:", data_to_predict['hh_type'].unique())
+        print("Unique values in mode:", data_to_predict['mode'].unique())
+        print("Unique values in period:", data_to_predict['period'].unique())
+
+        # Generate posterior predictive samples
+        print('Generating posterior predictive samples')
+        posterior_pred = pm.sample_posterior_predictive(trace, var_names=[target_column])
+
+        predictions = posterior_pred[target_column].mean(axis=0)
+
+        print("Shape of posterior_pred:", posterior_pred[target_column].shape)
+        print("Shape of predictions:", predictions.shape)
+        print("Length of data_to_predict:", len(data_to_predict))
+
+        if len(predictions) != len(data_to_predict):
+            raise ValueError(
+                f"Mismatch in prediction length: got {len(predictions)} predictions for {len(data_to_predict)} data points"
+            )
+
+        # (initial model scoring)
+        hpd_intervals = pm.stats.hdi(posterior_pred, hdi_prob=0.94)
+        credible_intervals = hpd_intervals[target_column]
+
+    output_filename = 'predictions.csv'
+    output_path = os.path.join(output_folder, output_filename)
+    data_to_predict.to_csv(output_path, index=False)
+    print('-------------------------------------------------------------')
+    print(f"Predictions exported to: {output_path}")
+
+    return predictions, credible_intervals
 
 
 def save_model_and_parameters(model, trace, output_folder):
     model_file_path = output_folder / 'pymc_model.pkl'
     trace_file_path = output_folder / 'pymc_trace.joblib'
 
-    joblib.dump(model, model_file_path)
-    joblib.dump(trace, trace_file_path)
+    with model_file_path.open('wb') as model_file:
+        dill.dump(model, model_file)
+
+    with trace_file_path.open('wb') as trace_file:
+        dill.dump(trace, trace_file)
 
     print(f"Model saved to: {model_file_path}")
     print(f"Trace saved to: {trace_file_path}")
@@ -212,3 +295,70 @@ def load_model_and_parameters(output_folder):
         print(f"Trace file not found at: {trace_file_path}")
 
     return model, trace
+
+
+def create_stratified_sample(df, columns_to_keep, target_column):
+    #todo takes too long to run - look into this, method is better than quiker way
+    print('Dataframe size before reduction')
+    print(df.shape)
+    sample_size = 0.02
+    stratified_samples = []
+
+    stratify_columns = [col for col in columns_to_keep if col != target_column]
+
+    for column in stratify_columns:
+        unique_vals = df[column].unique()
+        samples = []
+        for val in unique_vals:
+            # Filter rows for each unique value in the column
+            subset = df[df[column] == val]
+            if len(subset) > 1:
+                # Sample proportionally from each subset
+                sample = subset.sample(frac=sample_size, random_state=42)
+                samples.append(sample)
+            else:
+                samples.append(subset)
+
+        stratified_samples.append(pd.concat(samples))
+
+    combined_sample = pd.concat(stratified_samples).drop_duplicates().reset_index(drop=True)
+
+    combined_sample = combined_sample[columns_to_keep]
+
+    print('Dataframe size post reduction')
+    print(combined_sample.shape)
+    print(combined_sample['trips'].describe())
+
+    return combined_sample
+
+
+def create_hybrid_sample(df, output_folder):
+    print('Dataframe size before reduction')
+    print(df.shape)
+    sample_fraction = 0.01
+
+    # Random sampling
+    sampled_df = df.sample(frac=sample_fraction, random_state=42)
+
+    # Ensuring 'tbd' is in the data, these are the rows we will predict
+    important_value = 'TBD'
+    tbd_count = sampled_df[sampled_df['split_method'] == important_value].shape[0]
+
+    if tbd_count < 1000:
+        additional_needed = 1000 - tbd_count
+        additional_sample = df[df['split_method'] == important_value].sample(n=additional_needed, random_state=42)
+        sampled_df = pd.concat([sampled_df, additional_sample], ignore_index=True).reset_index(drop=True)
+
+    print('Dataframe size post reduction')
+    print(sampled_df.shape)
+    print(sampled_df['trips'].describe())
+
+
+    output_filename = 'data_to_model_reduced_size.csv'
+    output_path = os.path.join(output_folder, output_filename)
+    sampled_df.to_csv(output_path, index=False)
+    print('-------------------------------------------------------------')
+    print(f"Reduced size data exported to: {output_path}")
+
+
+    return sampled_df

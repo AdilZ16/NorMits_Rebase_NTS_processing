@@ -20,11 +20,16 @@ warnings.filterwarnings("ignore")
 
 def main(params):
     df, audit_df = process_cb_data(data=params.data_cb,
-                         columns_to_keep=params.columns_to_keep,
-                         output_folder=params.output_folder)
+                                   columns_to_keep=params.columns_to_keep,
+                                   output_folder=params.output_folder
+                                   )
 
     df, predict_data, training_data = process_data_for_hierarchical_bayesian_model(df=df,
-                                                                                   columns_to_keep=params.columns_to_keep)
+                                                                                   columns_to_keep=params.columns_to_keep,
+                                                                                   reduce_data_size=params.reduce_data_size,
+                                                                                   target_column=params.target_column,
+                                                                                   output_folder=params.output_folder
+                                                                                   )
 
     model, trace = load_model_and_parameters(output_folder=params.output_folder)
 
@@ -34,14 +39,15 @@ def main(params):
                                   trace=trace,
                                   output_folder=params.output_folder)
 
-    model, trace = generate_priors(data=training_data)
+    else:
+        print("Using pre-existing model and trace.")
+        model, trace = load_model_and_parameters(output_folder=params.output_folder)
 
-    predictions, credible_intervals = predict_model_hierarchical_bayesian_model(columns_to_keep=params.columns_to_keep,
-                                                                                data_to_predict=predict_data,
-                                                                                training_data=df,
+    predictions, credible_intervals = predict_model_hierarchical_bayesian_model(data_to_predict=predict_data,
                                                                                 trip_model=model,
                                                                                 trace=trace,
-                                                                                output_folder=params.output_folder)
+                                                                                output_folder=params.output_folder,
+                                                                                target_column=params.target_column)
     return
 
 
