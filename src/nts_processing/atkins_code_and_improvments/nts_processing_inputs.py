@@ -8,7 +8,7 @@ Original author: Adil Zaheer
 # pylint: enable=import-error,wrong-import-position
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from caf.toolkit import BaseConfig
 
 
@@ -17,3 +17,12 @@ class NTS_mts_inputs(BaseConfig):
     data_nhb: Optional[Path] = None
     output_folder_hb: Optional[Path] = None
     output_folder_nhb: Optional[Path] = None
+
+
+class NTS_mts_inputs_AZ_model(BaseConfig):
+    data_cb: Optional[Path] = None
+    columns_to_keep: Optional[List[str]] = None
+    output_folder: Optional[Path] = None
+    reduce_data_size: Optional[str] = None
+    target_column: Optional[str] = None
+    atkins_data_derivation_method: Optional[str] = None
