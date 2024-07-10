@@ -17,6 +17,8 @@ from tqdm.auto import tqdm
 import os
 import joblib
 import arviz as az
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from scipy import stats
 
 # pylint: disable=import-error,wrong-import-position
 # Local imports here
@@ -24,7 +26,7 @@ import arviz as az
 
 
 
-def process_cb_data(data, columns_to_keep, output_folder):
+def process_cb_data_atkins_method(data, columns_to_keep, output_folder):
     print('initial data processing')
     # Atkins methodology signified with #AK comment
 
@@ -36,17 +38,17 @@ def process_cb_data(data, columns_to_keep, output_folder):
     # Individual [at, hh] #AK / #AZ
     df = df[df['period'] != 0]
     df = df[~df['mode'].isin([8, 0])]
-    df = df[df['purpose'] != 0]
+    #df = df[df['purpose'] != 0]
+    df = df[~df['purpose'].isin([0, 2, 3, 4, 5, 6, 7, 8])] # testing purpose 1 only
 
-    df_total = df.groupby(['tfn_at', 'hh_type']).sum()
+    df_total = df.groupby(['tfn_at', 'hh_type', 'purpose', 'mode', 'period']).sum()
     df_total = df_total[['trips']].reset_index()
 
     df_total['split_method'] = np.where(df_total.trips >= 1000, 'observed', 'TBD')
     df_total = df_total.rename(columns={'trips': 'total_trips'})
 
-    df_trip_join = pd.merge(df, df_total, left_on=['tfn_at', 'hh_type'],
-                            right_on=['tfn_at', 'hh_type'], how='inner')
-
+    df_trip_join = pd.merge(df, df_total, left_on=['tfn_at', 'hh_type', 'purpose', 'mode', 'period'],
+                            right_on=['tfn_at', 'hh_type', 'purpose', 'mode', 'period'], how='inner')
 
     df_trip_join['split'] = df_trip_join['trips'] / df_trip_join['total_trips']
     columns_to_keep_with_additional = columns_to_keep + ['split', 'total_trips', 'split_method']
@@ -69,6 +71,34 @@ def process_cb_data(data, columns_to_keep, output_folder):
     return df_trip_join, audit_df
 
 
+def process_cb_data_tfn_method(data, columns_to_keep, output_folder):
+    df = pd.read_csv(data)
+    df = df[columns_to_keep]
+    df.columns = [str(col).strip() for col in df.columns]
+
+    df = df[df['period'] != 0]
+    df = df[~df['mode'].isin([8, 0])]
+    df = df[~df['purpose'].isin([0, 2, 3, 4, 5, 6, 7, 8])]
+
+    df_total = df.groupby(['tfn_at', 'hh_type', 'purpose', 'mode', 'period']).sum()
+    df_total = df_total[['trips']].reset_index()
+
+    df_total['split_method'] = np.where(df_total.trips >= 1000, 'observed', 'TBD')
+    df_total = df_total.rename(columns={'trips': 'total_trips'})
+
+    df_total['mode_period'] = df_total['mode'].astype(str) + '_' + df_total['period'].astype(str)
+    df_total.columns = [str(col).strip() for col in df_total.columns]
+
+
+    output_filename = 'df_total.csv'
+    output_path = os.path.join(output_folder, output_filename)
+    df_total.to_csv(output_path, index=False)
+    print('-------------------------------------------------------------')
+    print(f"df_trip_join exported to: {output_path}")
+
+    return df_total
+
+
 def process_data_for_hierarchical_bayesian_model(df, columns_to_keep, reduce_data_size, target_column, output_folder):
     print('processing data to model specifications')
 
@@ -76,103 +106,120 @@ def process_data_for_hierarchical_bayesian_model(df, columns_to_keep, reduce_dat
         print('Reducing data size')
         df = create_hybrid_sample(df, output_folder=output_folder)
 
-    for var in columns_to_keep:
-        # unique values and create new categorical type
-        unique_values = df[var].unique()
-        df[var] = pd.Categorical(df[var], categories=unique_values)
+    for var in df.columns:
+        if var != target_column:
+            # unique values and create new categorical type (excluding continuous target)
+            unique_values = df[var].unique()
+            df[var] = pd.Categorical(df[var], categories=unique_values)
 
-    predict_data = df[df['split_method'] == 'TBD'].copy()
-    training_data = df[df['split_method'] != 'TBD'].copy()
+    #predict_data = df[df['split_method'] == 'TBD'].copy()
+    #training_data = df[df['split_method'] != 'TBD'].copy()
 
-    output_filename = 'predict_data.csv'
+    output_filename = 'final_data_to_model.csv'
     output_path = os.path.join(output_folder, output_filename)
-    predict_data.to_csv(output_path, index=False)
+    df.to_csv(output_path, index=False)
     print('-------------------------------------------------------------')
-    print(f"predict_data exported to: {output_path}")
+    print(f"final_data_to_model exported to: {output_path}")
 
-    output_filename = 'training_data.csv'
-    output_path = os.path.join(output_folder, output_filename)
-    training_data.to_csv(output_path, index=False)
-    print('-------------------------------------------------------------')
-    print(f"training_data exported to: {output_path}")
-
-    return df, predict_data, training_data
+    return df
 
 
-def generate_priors(data):
+def generate_priors(data, target_column): #version 2
     print('generating priors')
     start_time = time.time()
 
+    # logging y to see if we can improve predictions
+    data[f'log_{target_column}'] = np.log1p(data[target_column])
+
     with pm.Model() as trip_model:
+        # Hyper-priors
+        sigma_purpose = pm.HalfCauchy('sigma_purpose', beta=5)
+        sigma_tfn_at = pm.HalfCauchy('sigma_tfn_at', beta=5)
+        sigma_hh_type = pm.HalfCauchy('sigma_hh_type', beta=5)
+        sigma_mode = pm.HalfCauchy('sigma_mode', beta=5)
+        sigma_period = pm.HalfCauchy('sigma_period', beta=5)
 
-        # mutable data used as batching the predictions is done due to memory issues, mutable data needed
-        trips_data = pm.MutableData('trips_data', data['trips'])
+        # Hierarchical priors
+        beta_purpose = pm.Normal('beta_purpose', mu=0, sigma=sigma_purpose, shape=len(data['purpose'].cat.categories))
+        beta_tfn_at = pm.Normal('beta_tfn_at', mu=0, sigma=sigma_tfn_at, shape=len(data['tfn_at'].cat.categories))
+        beta_hh_type = pm.Normal('beta_hh_type', mu=0, sigma=sigma_hh_type, shape=len(data['hh_type'].cat.categories))
+        beta_mode = pm.Normal('beta_mode', mu=0, sigma=sigma_mode, shape=len(data['mode'].cat.categories))
+        beta_period = pm.Normal('beta_period', mu=0, sigma=sigma_period, shape=len(data['period'].cat.categories))
 
-        # Hyper-priors (mean)
-        sigma_purpose_hc = pm.HalfCauchy('sigma_purpose', beta=5)
-        sigma_tfn_at_hc = pm.HalfCauchy('sigma_tfn_at', beta=5)
-        sigma_hh_type_hc = pm.HalfCauchy('sigma_hh_type', beta=5)
-        sigma_mode_hc = pm.HalfCauchy('sigma_mode', beta=5)
-        sigma_period_hc = pm.HalfCauchy('sigma_period', beta=5)
-
-        # Hierarchical priors (mean)
-        beta_purpose = pm.Normal('beta_purpose', mu=0, sigma=sigma_purpose_hc, shape=len(data['purpose'].cat.categories))
-        beta_tfn_at = pm.Normal('beta_tfn_at', mu=0, sigma=sigma_tfn_at_hc, shape=len(data['tfn_at'].cat.categories))
-        beta_hh_type = pm.Normal('beta_hh_type', mu=0, sigma=sigma_hh_type_hc, shape=len(data['hh_type'].cat.categories))
-        beta_mode = pm.Normal('beta_mode', mu=0, sigma=sigma_mode_hc, shape=len(data['mode'].cat.categories))
-        beta_period = pm.Normal('beta_period', mu=0, sigma=sigma_period_hc, shape=len(data['period'].cat.categories))
-
-        #  intercept
+        # Intercept
         intercept = pm.Normal('intercept', mu=0, sigma=10)
 
-        # Linear combination (model form)
-        mu_mean = (intercept + beta_purpose[data['purpose'].cat.codes] +
+        # Linear combination
+        mu = (intercept +
+              beta_purpose[data['purpose'].cat.codes] +
               beta_tfn_at[data['tfn_at'].cat.codes] +
               beta_hh_type[data['hh_type'].cat.codes] +
               beta_mode[data['mode'].cat.codes] +
               beta_period[data['period'].cat.codes])
 
-        # Expected value of outcome (must be positive)
-        theta = pm.math.exp(mu_mean)
+        # Model error
+        sigma = pm.HalfCauchy('sigma', beta=5)
+        sigma_heteroscedastic = pm.Deterministic('sigma_heteroscedastic', sigma * (1 + pm.math.exp(-mu))) # changing variability (to help higher trip value)
 
-        alpha = pm.Gamma('alpha', alpha=0.01, beta=0.01)
+        # Likelihood using Normal distribution
+        y = pm.Normal('y', mu=mu, sigma=sigma_heteroscedastic, observed=data[f'log_{target_column}'])
 
-        # Likelihood (sampling distribution) of observations
-        trips = pm.NegativeBinomial('trips', mu=theta, alpha=alpha, observed=trips_data)
+        # Inference (NUTS method)
+        trace = pm.sample(4000, tune=2000, cores=8, return_inferencedata=True, progressbar=True, target_accept=0.9)
+        #trace = pm.sample(1000, tune=500, cores=8, return_inferencedata=True, progressbar=True, step=pm.Metropolis())
 
-    with trip_model:
-        # Using NUTS sampler, uses trips likelihood, using metropolis for speed instead of nuts
-        print('sampling process beginning')
-        trace = pm.sample(200, tune=100, cores=8, random_seed=42, progressbar=True, step=pm.Metropolis())
-        # try this instead, can be faster. variational inference instead of mcmc
-        #approx = pm.fit(n=50000, method='advi')
-        #trace = approx.sample(500)
     end_time = time.time()
     print(f"Sampling took {end_time - start_time:.2f} seconds")
 
     return trip_model, trace
 
 
-'''def predict_model_hierarchical_bayesian_model(data_to_predict, trip_model, trace, target_column, output_folder):
+def predict_model_hierarchical_bayesian_model(data_to_predict,
+                                              trip_model,
+                                              trace,
+                                              target_column,
+                                              output_folder):
+    #version 2
     print('Making predictions')
 
-
     with trip_model:
-        # make predictions
-        pm.set_data({'trips_data': data_to_predict['trips']})
-        posterior_pred = pm.sample_posterior_predictive(trace, var_names=[target_column])
-
-    print(type(posterior_pred))
-    print(dir(posterior_pred))
+        # Make predictions
+        posterior_pred = pm.sample_posterior_predictive(trace, progressbar=True)
 
     # Extract predictions
-    pred_data = posterior_pred.posterior_predictive[target_column].values
+    pred_data = posterior_pred.posterior_predictive.y.values
     print("Shape of pred_data:", pred_data.shape)
 
     # Calculate stats across samples
-    predictions = pred_data.mean(axis=(0, 1))
-    lower_ci = np.percentile(pred_data, 2.5, axis=(0, 1))
-    upper_ci = np.percentile(pred_data, 97.5, axis=(0, 1))
+    predictions_log = pred_data.mean(axis=(0, 1))
+    lower_ci_log = np.percentile(pred_data, 2.5, axis=(0, 1))
+    upper_ci_log = np.percentile(pred_data, 97.5, axis=(0, 1))
+
+    print("Minimum log prediction:", predictions_log.min())
+    print("Maximum log prediction:", predictions_log.max())
+
+    # Transform predictions back to original scale
+    #predictions = np.expm1(predictions_log)
+    #lower_ci = np.expm1(lower_ci_log)
+    #upper_ci = np.expm1(upper_ci_log)
+    predictions = np.exp(predictions_log) - 1
+    lower_ci = np.exp(lower_ci_log) - 1
+    upper_ci = np.exp(upper_ci_log) - 1
+
+
+    # Check for negative values
+    neg_pred = np.sum(predictions < 0)
+    neg_lower = np.sum(lower_ci < 0)
+    neg_upper = np.sum(upper_ci < 0)
+
+    print(f"Number of negative predictions: {neg_pred}")
+    print(f"Number of negative lower CI: {neg_lower}")
+    print(f"Number of negative upper CI: {neg_upper}")
+
+    # Ensure non-negative predictions
+    predictions = np.maximum(predictions, 0)
+    lower_ci = np.maximum(lower_ci, 0)
+    upper_ci = np.maximum(upper_ci, 0)
 
     print("Shape of predictions:", predictions.shape)
     print("Length of data_to_predict:", len(data_to_predict))
@@ -186,72 +233,8 @@ def generate_priors(data):
     data_to_predict['lower_ci'] = lower_ci
     data_to_predict['upper_ci'] = upper_ci
 
-    output_filename = 'predictions.csv'
-    output_path = os.path.join(output_folder, output_filename)
-    data_to_predict.to_csv(output_path, index=False)
-    print('-------------------------------------------------------------')
-    print(f"Predictions exported to: {output_path}")
-
-    return data_to_predict'''
-
-
-def predict_model_hierarchical_bayesian_model(data_to_predict, trip_model, trace,
-                                              target_column, output_folder):
-
-
-    with trip_model:
-        print('Model variables:', trip_model.named_vars.keys())
-        print("Keys in the trace object:")
-        print(trace.keys())
-        print("\nSummary of the trace object:")
-        print(trace)
-
-        print('Updating model data context for prediction')
-        pm.set_data({
-            'trips_data': data_to_predict['trips'],
-
-            'sigma_purpose': trace['sigma_purpose'].mean(),
-            'beta_purpose': trace['beta_purpose'].mean(axis=0)[data_to_predict['purpose'].cat.codes],
-
-            'sigma_tfn_at': trace['sigma_tfn_at'].mean(),
-            'beta_tfn_at': trace['beta_tfn_at'].mean(axis=0)[data_to_predict['tfn_at'].cat.codes],
-
-            'sigma_hh_type': trace['sigma_hh_type'].mean(),
-            'beta_hh_type': trace['beta_hh_type'].mean(axis=0)[data_to_predict['hh_type'].cat.codes],
-
-            'sigma_mode': trace['sigma_mode'].mean(),
-            'beta_mode': trace['beta_mode'].mean(axis=0)[data_to_predict['mode'].cat.codes],
-
-            'sigma_period': trace['sigma_period'].mean(),
-            'beta_period': trace['beta_period'].mean(axis=0)[data_to_predict['period'].cat.codes],
-        })
-
-        # Debug
-        print("Shape of data_to_predict:", data_to_predict.shape)
-        print("Unique values in purpose:", data_to_predict['purpose'].unique())
-        print("Unique values in tfn_at:", data_to_predict['tfn_at'].unique())
-        print("Unique values in hh_type:", data_to_predict['hh_type'].unique())
-        print("Unique values in mode:", data_to_predict['mode'].unique())
-        print("Unique values in period:", data_to_predict['period'].unique())
-
-        # Generate posterior predictive samples
-        print('Generating posterior predictive samples')
-        posterior_pred = pm.sample_posterior_predictive(trace, var_names=[target_column])
-
-        predictions = posterior_pred[target_column].mean(axis=0)
-
-        print("Shape of posterior_pred:", posterior_pred[target_column].shape)
-        print("Shape of predictions:", predictions.shape)
-        print("Length of data_to_predict:", len(data_to_predict))
-
-        if len(predictions) != len(data_to_predict):
-            raise ValueError(
-                f"Mismatch in prediction length: got {len(predictions)} predictions for {len(data_to_predict)} data points"
-            )
-
-        # (initial model scoring)
-        hpd_intervals = pm.stats.hdi(posterior_pred, hdi_prob=0.94)
-        credible_intervals = hpd_intervals[target_column]
+    # Add log pred. for evaluation
+    data_to_predict[f'predicted_log_{target_column}'] = np.log1p(predictions)
 
     output_filename = 'predictions.csv'
     output_path = os.path.join(output_folder, output_filename)
@@ -259,7 +242,7 @@ def predict_model_hierarchical_bayesian_model(data_to_predict, trip_model, trace
     print('-------------------------------------------------------------')
     print(f"Predictions exported to: {output_path}")
 
-    return predictions, credible_intervals
+    return data_to_predict
 
 
 def save_model_and_parameters(model, trace, output_folder):
@@ -297,41 +280,6 @@ def load_model_and_parameters(output_folder):
     return model, trace
 
 
-def create_stratified_sample(df, columns_to_keep, target_column):
-    #todo takes too long to run - look into this, method is better than quiker way
-    print('Dataframe size before reduction')
-    print(df.shape)
-    sample_size = 0.02
-    stratified_samples = []
-
-    stratify_columns = [col for col in columns_to_keep if col != target_column]
-
-    for column in stratify_columns:
-        unique_vals = df[column].unique()
-        samples = []
-        for val in unique_vals:
-            # Filter rows for each unique value in the column
-            subset = df[df[column] == val]
-            if len(subset) > 1:
-                # Sample proportionally from each subset
-                sample = subset.sample(frac=sample_size, random_state=42)
-                samples.append(sample)
-            else:
-                samples.append(subset)
-
-        stratified_samples.append(pd.concat(samples))
-
-    combined_sample = pd.concat(stratified_samples).drop_duplicates().reset_index(drop=True)
-
-    combined_sample = combined_sample[columns_to_keep]
-
-    print('Dataframe size post reduction')
-    print(combined_sample.shape)
-    print(combined_sample['trips'].describe())
-
-    return combined_sample
-
-
 def create_hybrid_sample(df, output_folder):
     print('Dataframe size before reduction')
     print(df.shape)
@@ -351,8 +299,6 @@ def create_hybrid_sample(df, output_folder):
 
     print('Dataframe size post reduction')
     print(sampled_df.shape)
-    print(sampled_df['trips'].describe())
-
 
     output_filename = 'data_to_model_reduced_size.csv'
     output_path = os.path.join(output_folder, output_filename)
@@ -360,5 +306,96 @@ def create_hybrid_sample(df, output_folder):
     print('-------------------------------------------------------------')
     print(f"Reduced size data exported to: {output_path}")
 
-
     return sampled_df
+
+
+def evaluate_model(y_true, y_pred_log, output_folder):
+    y_true_log = np.log1p(y_true)
+    y_pred = np.exp(y_pred_log) - 1
+    y_pred = np.maximum(y_pred, 0)
+
+
+    metrics_dict = {
+        'mse_log': mean_squared_error(y_true_log, y_pred_log),
+        'mae_log': mean_absolute_error(y_true_log, y_pred_log),
+        'r2_log': r2_score(y_true_log, y_pred_log),
+        'mse': mean_squared_error(y_true, y_pred),
+        'mae': mean_absolute_error(y_true, y_pred),
+        'r2': r2_score(y_true, y_pred)
+    }
+
+    metrics_df = pd.DataFrame([metrics_dict])
+    metrics_df.to_csv(os.path.join(output_folder, 'model_evaluation_metrics.csv'), index=False)
+
+    plt.figure(figsize=(20, 15))
+
+    # Predicted vs Actual (log)
+    plt.subplot(2, 2, 1)
+    plt.scatter(y_true_log, y_pred_log, alpha=0.5)
+    plt.plot([y_true_log.min(), y_true_log.max()], [y_true_log.min(), y_true_log.max()], 'r--')
+    plt.xlabel('Actual Log Total Trips')
+    plt.ylabel('Predicted Log Total Trips')
+    plt.title('Predicted vs Actual (Log Space)')
+
+    # Predicted vs Actual (non log)
+    plt.subplot(2, 2, 2)
+    plt.scatter(y_true, y_pred, alpha=0.5)
+    plt.plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], 'r--')
+    plt.xlabel('Actual Total Trips')
+    plt.ylabel('Predicted Total Trips')
+    plt.title('Predicted vs Actual (Original Space)')
+    plt.xscale('log')
+    plt.yscale('log')
+
+    # Residuals plot (log)
+    plt.subplot(2, 2, 3)
+    residuals_log = y_true_log - y_pred_log
+    plt.scatter(y_pred_log, residuals_log, alpha=0.5)
+    plt.axhline(y=0, color='r', linestyle='--')
+    plt.xlabel('Predicted Log Total Trips')
+    plt.ylabel('Residuals (Log Space)')
+    plt.title('Residuals Plot (Log Space)')
+
+    # Residuals plot (non log)
+    plt.subplot(2, 2, 4)
+    residuals = y_true - y_pred
+    plt.scatter(y_pred, residuals, alpha=0.5)
+    plt.axhline(y=0, color='r', linestyle='--')
+    plt.xlabel('Predicted Total Trips')
+    plt.ylabel('Residuals (Original Space)')
+    plt.title('Residuals Plot (Original Space)')
+    plt.xscale('log')
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_folder, 'diagnostic_plots.png'))
+    plt.close()
+
+    # Histograms
+    plt.figure(figsize=(15, 5))
+    plt.subplot(1, 2, 1)
+    plt.hist(y_true, bins=50, alpha=0.5)
+    plt.title('Histogram of Actual Total Trips')
+    plt.xlabel('Total Trips')
+    plt.ylabel('Frequency')
+    plt.subplot(1, 2, 2)
+    plt.hist(y_true_log, bins=50, alpha=0.5)
+    plt.title('Histogram of Log Actual Total Trips')
+    plt.xlabel('Log Total Trips')
+    plt.ylabel('Frequency')
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_folder, 'data_distribution.png'))
+    plt.close()
+
+
+    # prediction errors
+    plt.figure(figsize=(10, 6))
+    error_ratio = np.abs(y_pred - y_true) / y_true
+    plt.scatter(y_true, error_ratio, alpha=0.5)
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('Actual Total Trips')
+    plt.ylabel('Relative Error')
+    plt.title('Relative Prediction Error vs Actual Total Trips')
+    plt.savefig(os.path.join(output_folder, 'relative_error_plot.png'))
+    plt.close()
+
+    return metrics_df

@@ -25,3 +25,4 @@ class NTS_mts_inputs_AZ_model(BaseConfig):
     output_folder: Optional[Path] = None
     reduce_data_size: Optional[str] = None
     target_column: Optional[str] = None
+    atkins_data_derivation_method: Optional[str] = None
