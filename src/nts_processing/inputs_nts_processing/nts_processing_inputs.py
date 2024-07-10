@@ -26,3 +26,7 @@ class NTS_mts_inputs_AZ_model(BaseConfig):
     reduce_data_size: Optional[str] = None
     target_column: Optional[str] = None
     atkins_data_derivation_method: Optional[str] = None
+
+
+class NTS_production_weights_inputs(BaseConfig):
+    data: Optional[Path] = None
