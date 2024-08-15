@@ -21,6 +21,7 @@ from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error, m
 
 from caf.ml.functions import data_pipeline_functions as dpf
 from caf.ml.functions import process_data_functions as pdf
+from src.nts_processing.AZ_code_MTS_model import process_cb_functions as mts_process
 
 
 class TripRate:
@@ -47,6 +48,11 @@ class TripRate:
             columns_to_keep=self.columns_to_keep,
             output_folder=self.output_folder
         )
+
+    def process_cb_data_tfn_method(self):
+        return mts_process.process_cb_data_tfn_method(data=self.data,
+                                                      columns_to_keep=self.columns_to_keep,
+                                                      output_folder=self.output_folder)
 
 
 def nhb_production_weights_production(dfr, mode, geo_incl, seg_incl, tfn_mode, tfn_ttype, columns_to_keep, output_folder):
@@ -170,8 +176,13 @@ def model_to_calculate_gamma(nhb,
 
     # data processing
     original_data = nhb.copy()
+
     # make feature list to use
-    features_to_use = [col for col in nhb.columns if col not in ignore_columns]
+    if ignore_columns is None:
+        features_to_use = nhb.columns.tolist()
+    else:
+        features_to_use = [col for col in nhb.columns if col not in ignore_columns]
+
     nhb_to_model = nhb[features_to_use]
 
     # caf.ml index columns function
@@ -219,11 +230,17 @@ def model_to_calculate_gamma(nhb,
     y_pred_non_log = np.exp(model.predict(x))
     y_pred_log = model.predict(x)
 
-    # gamma from predictions (non-log)
-    gamma_pred = y_pred_non_log / original_data['trips.hb']
-    final_df = original_data.copy()
-    final_df['predicted_trips'] = y_pred_non_log
-    final_df['predicted_gamma'] = gamma_pred
+
+    if 'trips.hb' in data_to_model.columns:
+        # gamma from predictions (non-log)
+        gamma_pred = y_pred_non_log / original_data['trips.hb']
+        final_df = original_data.copy()
+        final_df['predicted_trips'] = y_pred_non_log
+        final_df['predicted_gamma'] = gamma_pred
+    else:
+        final_df = original_data.copy()
+        final_df['predicted_total_trips'] = y_pred_non_log
+        final_df['predicted_total_trips_log'] = y_pred_log
 
 
     # Feature importance (for extra evaluation)

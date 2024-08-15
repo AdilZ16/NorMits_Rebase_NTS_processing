@@ -42,3 +42,5 @@ class NTS_production_weights_inputs(BaseConfig):
     index_columns: Optional[List[str]] = None
     drop_columns: Optional[List[str]] = None
     ignore_columns: Optional[List[str]] = None
+    production_weight_calculation: Optional[str] = None
+    mts_calculation: Optional[str] = None
