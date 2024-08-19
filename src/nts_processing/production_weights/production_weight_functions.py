@@ -164,6 +164,28 @@ def tune_model(X, y):
     return randomised_search.best_estimator_
 
 
+def generate_missing_rows(purpose_value, input_data, target_column):
+    # Generate all possible combos
+    all_combinations = pd.MultiIndex.from_product([
+        range(1, 21),  # tfn_at
+        range(1, 9),  # hh_type
+        [purpose_value], # purpose
+        range(1, 8),  # mode
+        range(1, 7)  # period
+    ], names=['tfn_at', 'hh_type', 'purpose', 'mode', 'period'])
+
+    all_data = pd.DataFrame(index=all_combinations).reset_index()
+    all_data['mode_period'] = all_data['mode'].astype(str) + '_' + all_data['period'].astype(str)
+
+    merged_data = pd.merge(all_data, input_data,
+                           on=['tfn_at', 'hh_type', 'purpose', 'mode', 'period'],
+                           how='left')
+
+    merged_data['rows_added'] = merged_data[target_column].isna()
+
+    return merged_data
+
+
 def model_to_calculate_gamma(nhb,
                              output_folder,
                              target_column,
@@ -171,7 +193,8 @@ def model_to_calculate_gamma(nhb,
                              categorical_features,
                              index_columns,
                              drop_columns,
-                             ignore_columns):
+                             ignore_columns,
+                             purpose_value):
     start_time = time.time()
 
     # data processing
@@ -189,17 +212,31 @@ def model_to_calculate_gamma(nhb,
     if index_columns is not None:
         nhb_to_model = pdf.index_sorter(df=nhb_to_model, index_columns=index_columns, drop_columns=drop_columns)
 
+    if 'trips.hb' not in nhb_to_model.columns:
+        nhb_to_model_final = generate_missing_rows(purpose_value=purpose_value,
+                                                   input_data=nhb_to_model,
+                                                   target_column=target_column)
+    else:
+        nhb_to_model_final = nhb_to_model
+
     # caf.ml data transformations (scale & encoding) function
-    data_to_model, transformations = dpf.process_data_pipeline(df=nhb_to_model,
+    data_to_model, transformations = dpf.process_data_pipeline(df=nhb_to_model_final,
                                                                numerical_features=numerical_features,
                                                                categorical_features=categorical_features,
                                                                target_column=target_column,
                                                                output_folder=output_folder)
 
+    ''' testing model generation with rows that are actually present in metadata'''
+    data_for_training = data_to_model.dropna(subset=[target_column])
+    y_log = np.log1p(data_for_training[target_column])
+    y_non_log = data_for_training[target_column]
+    x = data_for_training.drop(columns=[target_column])
+
+
     # log y (to ensure positive predictions when reverting log (exp.))
-    y_log = np.log1p(nhb[target_column])
-    y_non_log = nhb[target_column]
-    x = data_to_model.drop(columns=[target_column])
+    # y_log = np.log1p(data_to_model[target_column]) # y_log = np.log1p(nhb[target_column])
+    # y_non_log = data_to_model[target_column] # y_non_log = nhb[target_column]
+    # x = data_to_model.drop(columns=[target_column])
 
     model_filename = os.path.join(output_folder, 'trained_model.pkl')
 
@@ -225,20 +262,28 @@ def model_to_calculate_gamma(nhb,
     print(f"Cross-validation R2 scores: {cv_scores}")
     print(f"Mean R2 score: {cv_scores.mean()}")
 
+
+
     ## PREDICTION ##
     # LOG + FORCE POSITIVE
-    y_pred_non_log = np.exp(model.predict(x))
-    y_pred_log = model.predict(x)
+    ''' modified prediction based on generated rows (see other docstring)'''
+    X_all = data_to_model.drop(columns=[target_column])
+    y_pred_non_log = np.exp(model.predict(X_all))
+    y_pred_log = model.predict(X_all)
+    y_pred_non_log_excluding_generated_rows = np.exp(model.predict(x))
+    y_pred_log_excluding_generated_rows = model.predict(x)
 
 
     if 'trips.hb' in data_to_model.columns:
         # gamma from predictions (non-log)
         gamma_pred = y_pred_non_log / original_data['trips.hb']
-        final_df = original_data.copy()
+        # final_df = original_data.copy()
+        final_df = nhb_to_model_final.copy()
         final_df['predicted_trips'] = y_pred_non_log
         final_df['predicted_gamma'] = gamma_pred
     else:
-        final_df = original_data.copy()
+        # final_df = original_data.copy()
+        final_df = nhb_to_model_final.copy()
         final_df['predicted_total_trips'] = y_pred_non_log
         final_df['predicted_total_trips_log'] = y_pred_log
 
@@ -253,16 +298,24 @@ def model_to_calculate_gamma(nhb,
     final_df.to_csv(os.path.join(output_folder, 'final_predictions.csv'), index=True)
 
 
-    metrics_log = {'mse_log': mean_squared_error(y_log, y_pred_log),
-                   'rmse_log': np.sqrt(mean_squared_error(y_log, y_pred_log)),
-                   'mae_log': mean_absolute_error(y_log, y_pred_log),
-                   'r2_log': r2_score(y_log, y_pred_log)}
+    metrics_log = {'mse_log': mean_squared_error(y_log,
+                                                 y_pred_log_excluding_generated_rows),
+                   'rmse_log': np.sqrt(mean_squared_error(y_log,
+                                                          y_pred_log_excluding_generated_rows)),
+                   'mae_log': mean_absolute_error(y_log,
+                                                  y_pred_log_excluding_generated_rows),
+                   'r2_log': r2_score(y_log,
+                                      y_pred_log_excluding_generated_rows)}
 
 
-    metrics_non_log = {'mse_non_log': mean_squared_error(y_non_log, y_pred_non_log),
-                       'rmse_non_log': np.sqrt(mean_squared_error(y_non_log, y_pred_non_log)),
-                       'mae_non_log': mean_absolute_error(y_non_log, y_pred_non_log),
-                       'r2_non_log': r2_score(y_non_log, y_pred_non_log)}
+    metrics_non_log = {'mse_non_log': mean_squared_error(y_non_log,
+                                                         y_pred_non_log_excluding_generated_rows),
+                       'rmse_non_log': np.sqrt(mean_squared_error(y_non_log,
+                                                                  y_pred_non_log_excluding_generated_rows)),
+                       'mae_non_log': mean_absolute_error(y_non_log,
+                                                          y_pred_non_log_excluding_generated_rows),
+                       'r2_non_log': r2_score(y_non_log,
+                                              y_pred_non_log_excluding_generated_rows)}
 
 
     metrics_dict = {**metrics_log, **metrics_non_log}

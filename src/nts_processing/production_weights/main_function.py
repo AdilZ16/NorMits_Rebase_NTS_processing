@@ -26,7 +26,8 @@ def main(params):
                                                      categorical_features=params.categorical_features,
                                                      index_columns=params.index_columns,
                                                      drop_columns=params.drop_columns,
-                                                     ignore_columns=params.ignore_columns)
+                                                     ignore_columns=params.ignore_columns,
+                                                     purpose_value=params.purpose_value)
         return final_predictions
 
     else:
@@ -52,6 +53,7 @@ def main(params):
                                                      categorical_features=params.categorical_features,
                                                      index_columns=params.index_columns,
                                                      drop_columns=params.drop_columns,
-                                                     ignore_columns=params.ignore_columns)
+                                                     ignore_columns=params.ignore_columns,
+                                                     purpose_value=params.purpose_value)
 
     return final_predictions
