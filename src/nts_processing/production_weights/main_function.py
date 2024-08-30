@@ -27,7 +27,9 @@ def main(params):
                                                      index_columns=params.index_columns,
                                                      drop_columns=params.drop_columns,
                                                      ignore_columns=params.ignore_columns,
-                                                     purpose_value=params.purpose_value)
+                                                     purpose_value=params.purpose_value,
+                                                     production_weight_calculation=params.production_weight_calculation,
+                                                     mts_calculation=params.mts_calculation)
         return final_predictions
 
     else:
@@ -36,7 +38,8 @@ def main(params):
                                     geo_incl=params.geo_incl,
                                     segments_incl=params.segments_incl,
                                     columns_to_keep=params.columns_to_keep,
-                                    output_folder=params.output_folder)
+                                    output_folder=params.output_folder,
+                                    purpose_value=params.purpose_value)
 
         if params.production_weight_calculation is not None:
             df, df_post_processing = trip_rate_object.nhb_production_weights_production()
@@ -54,6 +57,8 @@ def main(params):
                                                      index_columns=params.index_columns,
                                                      drop_columns=params.drop_columns,
                                                      ignore_columns=params.ignore_columns,
-                                                     purpose_value=params.purpose_value)
+                                                     purpose_value=params.purpose_value,
+                                                     production_weight_calculation=params.production_weight_calculation,
+                                                     mts_calculation=params.mts_calculation)
 
     return final_predictions

@@ -71,14 +71,24 @@ def process_cb_data_atkins_method(data, columns_to_keep, output_folder):
     return df_trip_join, audit_df
 
 
-def process_cb_data_tfn_method(data, columns_to_keep, output_folder):
+def process_cb_data_tfn_method(data, columns_to_keep, output_folder, purpose_value):
+    """
+    :param data: data to process
+    :param columns_to_keep: which columns in the data you want to keep. Columns not included will
+                            still be kept, this function ensures that regardless of any data
+                            processing, the column will be kept.
+    :param output_folder:   path to output folder. Where you want model outputs to go.
+    :param purpose_value:   value from 1 to 8 to dictate which purpose is being modelling.
+    :return: processed data which will be exported to your output folder.
+    """
     df = pd.read_csv(data)
     df = df[columns_to_keep]
     df.columns = [str(col).strip() for col in df.columns]
 
     df = df[df['period'] != 0]
     df = df[~df['mode'].isin([8, 0])]
-    df = df[~df['purpose'].isin([0, 2, 3, 4, 5, 6, 7, 8])]
+    df = df[df['purpose'] == purpose_value]
+    # df = df[~df['purpose'].isin([0, 2, 3, 4, 5, 6, 7, 8])]
 
     df_total = df.groupby(['tfn_at', 'hh_type', 'purpose', 'mode', 'period']).sum()
     df_total = df_total[['trips']].reset_index()

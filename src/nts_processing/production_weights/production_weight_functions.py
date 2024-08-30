@@ -17,15 +17,16 @@ import time
 from sklearn.model_selection import train_test_split, cross_val_score, RandomizedSearchCV, RepeatedKFold
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error, make_scorer
-
-
 from caf.ml.functions import data_pipeline_functions as dpf
 from caf.ml.functions import process_data_functions as pdf
 from src.nts_processing.AZ_code_MTS_model import process_cb_functions as mts_process
 
 
 class TripRate:
-    def __init__(self, data, mode, geo_incl, segments_incl, columns_to_keep, output_folder):
+    """
+    Trip rate class: used to store and call the data processing functions.
+    """
+    def __init__(self, data, mode, geo_incl, segments_incl, columns_to_keep, output_folder, purpose_value):
         self.data = data
         self.mode = mode
         self.geo_incl = geo_incl
@@ -35,6 +36,7 @@ class TripRate:
         self.nts_dtype = int
         self.tfn_mode = [1, 2, 3, 4, 5, 6, 7, 8]
         self.tfn_ttype = None
+        self.purpose_value = purpose_value
         print('Trip rate class is running')
 
     def nhb_production_weights_production(self):
@@ -46,17 +48,34 @@ class TripRate:
             tfn_mode=self.tfn_mode,
             tfn_ttype=self.tfn_ttype,
             columns_to_keep=self.columns_to_keep,
-            output_folder=self.output_folder
+            output_folder=self.output_folder,
         )
 
     def process_cb_data_tfn_method(self):
         return mts_process.process_cb_data_tfn_method(data=self.data,
                                                       columns_to_keep=self.columns_to_keep,
-                                                      output_folder=self.output_folder)
+                                                      output_folder=self.output_folder,
+                                                      purpose_value=self.purpose_value)
 
 
 def nhb_production_weights_production(dfr, mode, geo_incl, seg_incl, tfn_mode, tfn_ttype, columns_to_keep, output_folder):
+    """
+    Arguments below are included to keep previous iterations code functional. See mdl.triprate:
+    :param dfr: data to process
+    :param mode: specify which mode to include from the classified build. [Default None]
+    :param geo_incl: specify which geography to include from the classified build. [Default = tfn_at]
+    :param seg_incl: specify which segmentation to include from the classified build. [Default = None]
+    :param tfn_mode: hardcoded argument, linked to previous methodology. Ignore.
+    :param tfn_ttype: hardcoded argument, linked to previous methodology. Ignore.
 
+
+
+    :param columns_to_keep: which columns in the data you want to keep. Columns not included will
+                            still be kept, this function ensures that regardless of any data
+                            processing, the column will be kept.
+    :param output_folder:   path to output folder. Where you want model outputs to go.
+    :return:
+    """
     dfr = pd.read_csv(dfr)
     dfr = dfr[columns_to_keep]
 
@@ -95,7 +114,7 @@ def nhb_production_weights_production(dfr, mode, geo_incl, seg_incl, tfn_mode, t
 
 
 def custom_loss(y_true, y_pred, weight=5):
-    '''
+    """
     :param y_true: Recorded y values
     :param y_pred: Predicted y values
     :param weight: increase importance of ratio penalty relative to mse in the
@@ -103,8 +122,12 @@ def custom_loss(y_true, y_pred, weight=5):
                     mse and less on keeping target ratio (1-10 range makes sense, could
                     look to hyperparam tune this)
     :return: return final loss (mse + weighted ratio penalty term)
-    '''
-    # todo hyperparam optim for weight variable / change the ratio percentage based on our knowledge
+
+    This function works in a very similar way to the custom_loss_mts function. The main
+    noteable difference is the fact the nhb ratio is one fixed value as opposed to the
+    dictionary used in custom_loss_mts.
+
+    """
     # calculate mean squared error between true and predict
     mse = np.mean((y_true - y_pred)**2)
     # calculate ratio of sum of pred to sum of true
@@ -114,45 +137,115 @@ def custom_loss(y_true, y_pred, weight=5):
     return mse + weight * ratio_penalty
 
 
-def tune_model(X, y):
-    '''
-    :param X: x variables (all categorical other than one continuous)
-    :param y: target variable (continuous)
-    :return: returns best model found in the search
-    '''
+def custom_loss_mts(y_true, y_pred, mode_period_values, weight=5, large_value_weight=2):
+    """
+    This function is used by Sci-Kit Learn behind the scenes. No user interaction required other than
+    altering the weight values. 5 and 2 are default.
 
+    Mode_period_grid consists of a dictionary with a grid of target ratios for mode period
+    combinations. The string value that corresponds to the ratio is in the same format as the
+    mode_period column in the dataframe that the modelling functions receive (see df_total in your
+    output folder).
 
-    # hyper param. grid
-    param_grid = {
-        'n_estimators': [100, 200, 300, 400],
-        'max_depth': [3, 5, 7, 9],
-        'min_samples_split': [2, 5, 10],
-        'min_samples_leaf': [1, 2, 4],
-        'learning_rate': [0.01, 0.05, 0.1, 0.2],
-        'subsample': [0.8, 0.9, 1.0],
+    The function works by first calculating the mean squared error between true
+    and predicted values. Inside the loop, the mode period value for the iteration and corresponding
+    target value is found. The ratio of that iteration is calculated. The squared difference between
+    actual and target ratios is then calculated as a penalty term (added to total penalty).
+
+    For large y values (top 20%), an additional penalty term is calculated. The average large and
+    regular penalty value is then calculated to be included in a loss function. The loss combines
+    the mean squared error, weighted average penalty and large penalty.
+
+    The overall aim of the function is to guide the model towards predictions that minimise the mean
+    squared error as well as maintains the target ratios for each specific mode period combination.
+
+    :param y_true: Recorded y values
+    :param y_pred: Predicted y values
+    :param mode_period_values: A list of mode-period combinations ('1_1', '1_2'...) corresponding
+                               to each row in y_true and y_pred.
+    :param weight: increase importance of ratio penalty relative to mse in the
+                    full loss calc. Lower weight = model focuses more on minimising
+                    mse and less on keeping target ratio (1-10 range makes sense, could
+                    look to hyperparam tune this)
+    :param large_value_weight: same as weight argument but only used for large values (less accurate
+                               predictions).
+    :return: return final loss (mse + weighted ratio penalty term)
+    """
+    mode_period_grid = {
+        '1_1': 0.0773, '1_2': 0.0755, '1_3': 0.0258, '1_4': 0.0179, '1_5': 0.0302, '1_6': 0.0275,
+        '2_1': 0.0063, '2_2': 0.0039, '2_3': 0.0016, '2_4': 0.0021, '2_5': 0.0019, '2_6': 0.0017,
+        '3_1': 0.1739, '3_2': 0.1502, '3_3': 0.0644, '3_4': 0.0596, '3_5': 0.0914, '3_6': 0.0722,
+        '4_1': 0.0063, '4_2': 0.0021, '4_3': 0.0012, '4_4': 0.0028, '4_5': 0.0020, '4_6': 0.0014,
+        '5_1': 0.0292, '5_2': 0.0216, '5_3': 0.0030, '5_4': 0.0042, '5_5': 0.0087, '5_6': 0.0038,
+        '6_1': 0.0096, '6_2': 0.0029, '6_3': 0.0007, '6_4': 0.0030, '6_5': 0.0021, '6_6': 0.0008,
+        '7_1': 0.0057, '7_2': 0.0019, '7_3': 0.0006, '7_4': 0.0012, '7_5': 0.0012, '7_6': 0.0007
     }
 
-    # cross validation method
-    cv = RepeatedKFold(n_splits=5, random_state=42)
-    print("Starting model tuning...")
-    start_time = time.time()
+# todo run for all purposes, check for overfitting
 
-    # make_scorer lets the loss function work with the model
-    custom_scorer = make_scorer(custom_loss, greater_is_better=False)
+    mse = np.mean((y_true - y_pred) ** 2)
+    total_penalty = 0
+    large_value_penalty = 0
+    for i, (y_t, y_p) in enumerate(zip(y_true, y_pred)):
+        mode_period = mode_period_values[i]
+        target_ratio = mode_period_grid[mode_period]
+        # to stop dividing by 0 error
+        actual_ratio = y_p / y_t if y_t != 0 else 0
+        penalty = (actual_ratio - target_ratio) ** 2
+        total_penalty += penalty
+
+        if y_t > np.percentile(y_true, 80):
+            large_value_penalty += (y_t - y_p)**2 * large_value_weight
+
+    avg_penalty = total_penalty / len(y_true)
+    avg_large_penalty_value = large_value_penalty / len(y_true)
+    loss = mse + weight * avg_penalty + avg_large_penalty_value
+
+    return loss
+
+
+def tune_model(X, y, custom_scorer):
+    """
+    :param X: x variables (explanatory)
+    :param y: target variable
+    :param custom_scorer: Ignore argument, this is the custom loss function that the model uses
+                          for predictions
+    :return: returns best model found in the search
+
+    Fairly simple model set up function that finds the best model possible across 10 folds considering
+    the hyperparamters found in param_grid. The model utilises the custom loss function, which depends
+    on if mts or production weights modelling is taking place.
+
+    """
+
+    # hyper param. grid
+    param_grid = {'n_estimators': [300, 400, 500],
+                  'max_depth': [5, 7, 9],
+                  'min_samples_split': [2, 5],
+                  'min_samples_leaf': [2, 4],
+                  'learning_rate': [0.05, 0.1, 0.2],
+                  'subsample': [0.8, 0.9, 1.0],
+                  }
+
+    # cross validation method
+    cv = RepeatedKFold(n_splits=10, random_state=42)
 
     # make it faster (uses all cores available)
     n_cores = multiprocessing.cpu_count()
     print(f"Using {n_cores} CPU cores")
 
-    # actual model generation
+
+    print("Starting model tuning...")
+    start_time = time.time()
+
     gb = GradientBoostingRegressor(random_state=42)
-    randomised_search = RandomizedSearchCV(estimator=GradientBoostingRegressor(random_state=42),
+    randomised_search = RandomizedSearchCV(estimator=gb,
                                            param_distributions=param_grid,
                                            n_iter=100,
                                            cv=cv,
                                            scoring=custom_scorer,
                                            n_jobs=n_cores,
-                                           verbose=1,
+                                           verbose=2,
                                            random_state=42)
 
     randomised_search.fit(X, y)
@@ -165,6 +258,17 @@ def tune_model(X, y):
 
 
 def generate_missing_rows(purpose_value, input_data, target_column):
+    """
+    :param purpose_value: value from 1 to 8 to dictate which purpose is being modelling
+    :param input_data: data that the missing data is being added to
+    :param target_column: this is the column we are trying to predict
+    :return: original data with the additional rows
+
+    This function begins with creating all possible combinations of data from the classified
+    build. This is then combined with the original data in order to ensure all possible rows
+    are present in the dataframe to be modelled.
+
+    """
     # Generate all possible combos
     all_combinations = pd.MultiIndex.from_product([
         range(1, 21),  # tfn_at
@@ -194,7 +298,35 @@ def model_to_calculate_gamma(nhb,
                              index_columns,
                              drop_columns,
                              ignore_columns,
-                             purpose_value):
+                             purpose_value,
+                             production_weight_calculation,
+                             mts_calculation):
+    """
+    :param nhb: data to model
+    :param output_folder: path to output folder. Where you want model outputs to go.
+    :param target_column: this is the column we are trying to predict
+    :param numerical_features: x variables that are numerical
+    :param categorical_features: x variables that are categorical
+    :param index_columns: any columns to index (not relevant for modelling but relevant for data structure / analysis)
+    :param drop_columns: any columns to drop
+    :param ignore_columns: any columns that aren't relevant for modelling but shouldn't be indexed or dropped
+    :param purpose_value: value from 1 to 8 to dictate which purpose is being modelling
+    :param production_weight_calculation: None or string, if data needs to be processed for production weight modelling. Must be string if data_skip_cb_generation is None
+    :param mts_calculation: None or string, if data needs to be processed for mts modelling. Must be string if data_skip_cb_generation is None
+    :return: final dataframe which contains all the predicted results overlay onto the original dataframe format
+
+
+    This is the main function that dictates the modelling process from start to finish. Prior to this
+    point data processing is the only steps covered. Indexing, generating missing rows, and transforming
+    the data all initial happen (data transformation includes scaling and encoding x variables).
+    Y is then logged and left in its original scale. Training and tests splits are created based on
+    this. The custom loss function is then created depending on if mts or production weight modelling is
+    being done.
+
+    The model is then initialised and predictions on both log and non log scales are made. The rest of
+    the function conducts general model scoring and feature evaluation testing. All results are
+    output to the output_folder.
+    """
     start_time = time.time()
 
     # data processing
@@ -218,7 +350,7 @@ def model_to_calculate_gamma(nhb,
                                                    target_column=target_column)
     else:
         nhb_to_model_final = nhb_to_model
-
+    print(nhb_to_model_final)
     # caf.ml data transformations (scale & encoding) function
     data_to_model, transformations = dpf.process_data_pipeline(df=nhb_to_model_final,
                                                                numerical_features=numerical_features,
@@ -226,17 +358,11 @@ def model_to_calculate_gamma(nhb,
                                                                target_column=target_column,
                                                                output_folder=output_folder)
 
-    ''' testing model generation with rows that are actually present in metadata'''
     data_for_training = data_to_model.dropna(subset=[target_column])
     y_log = np.log1p(data_for_training[target_column])
     y_non_log = data_for_training[target_column]
     x = data_for_training.drop(columns=[target_column])
 
-
-    # log y (to ensure positive predictions when reverting log (exp.))
-    # y_log = np.log1p(data_to_model[target_column]) # y_log = np.log1p(nhb[target_column])
-    # y_non_log = data_to_model[target_column] # y_non_log = nhb[target_column]
-    # x = data_to_model.drop(columns=[target_column])
 
     model_filename = os.path.join(output_folder, 'trained_model.pkl')
 
@@ -244,13 +370,26 @@ def model_to_calculate_gamma(nhb,
     X_train, X_test = x.iloc[train_index], x.iloc[test_index]
     y_train_log, y_test_log = y_log.iloc[train_index], y_log.iloc[test_index]
 
+
+    custom_scorer_loss_func = None
+    if production_weight_calculation is not None:
+        # make_scorer lets the loss function work with the model
+        print("Using custom_loss scorer")
+        custom_scorer_loss_func = make_scorer(custom_loss, greater_is_better=False)
+
+    elif mts_calculation is not None:
+        mode_period_values = nhb_to_model_final['mode_period'].tolist()
+        print("Using custom_loss_mts scorer")
+        custom_scorer_loss_func = make_scorer(lambda y_true, y_pred: custom_loss_mts(y_true, y_pred, mode_period_values),
+        greater_is_better=False)
+
     # save/load model
     if os.path.exists(model_filename):
         print(f"Loading pre-trained model: {model_filename}")
         with open(model_filename, 'rb') as file:
             model = pickle.load(file)
     else:
-        model = tune_model(X_train, y_train_log)
+        model = tune_model(X_train, y_train_log, custom_scorer=custom_scorer_loss_func)
         model.fit(X_train, y_train_log)
         with open(model_filename, 'wb') as file:
             pickle.dump(model, file)
@@ -263,26 +402,23 @@ def model_to_calculate_gamma(nhb,
     print(f"Mean R2 score: {cv_scores.mean()}")
 
 
-
     ## PREDICTION ##
     # LOG + FORCE POSITIVE
-    ''' modified prediction based on generated rows (see other docstring)'''
     X_all = data_to_model.drop(columns=[target_column])
     y_pred_non_log = np.exp(model.predict(X_all))
     y_pred_log = model.predict(X_all)
     y_pred_non_log_excluding_generated_rows = np.exp(model.predict(x))
     y_pred_log_excluding_generated_rows = model.predict(x)
 
+    mode_period_values = nhb_to_model_final['mode_period'].tolist()
 
     if 'trips.hb' in data_to_model.columns:
         # gamma from predictions (non-log)
         gamma_pred = y_pred_non_log / original_data['trips.hb']
-        # final_df = original_data.copy()
         final_df = nhb_to_model_final.copy()
         final_df['predicted_trips'] = y_pred_non_log
         final_df['predicted_gamma'] = gamma_pred
     else:
-        # final_df = original_data.copy()
         final_df = nhb_to_model_final.copy()
         final_df['predicted_total_trips'] = y_pred_non_log
         final_df['predicted_total_trips_log'] = y_pred_log
