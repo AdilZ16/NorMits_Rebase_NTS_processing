@@ -45,3 +45,7 @@ class NTS_production_weights_inputs(BaseConfig):
     production_weight_calculation: Optional[str] = None
     mts_calculation: Optional[str] = None
     purpose_value: Optional[int] = None
+
+
+class destination_choice_inputs(BaseConfig):
+    data: Optional[Path] = None
