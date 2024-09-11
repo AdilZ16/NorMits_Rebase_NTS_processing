@@ -8,7 +8,7 @@ import pandas as pd
 # pylint: disable=import-error,wrong-import-position
 # pylint: enable=import-error,wrong-import-position
 
-from src.nts_processing.production_weights.production_weight_functions import TripRate, model_to_calculate_gamma
+from src.nts_processing.production_weights_and_MTS.prod_weight_mts_functions import TripRate, model_to_calculate_gamma
 
 
 def main(params):
