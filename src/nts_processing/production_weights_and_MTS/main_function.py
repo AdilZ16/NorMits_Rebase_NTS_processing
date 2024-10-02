@@ -12,7 +12,6 @@ from src.nts_processing.production_weights_and_MTS.prod_weight_mts_functions imp
 
 
 def main(params):
-    # global statement
     df = None
 
     if params.data_skip_cb_generation is not None:

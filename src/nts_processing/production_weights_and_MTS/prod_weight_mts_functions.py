@@ -181,7 +181,7 @@ def custom_loss_mts(y_true, y_pred, mode_period_values, weight=5, large_value_we
         '7_1': 0.0057, '7_2': 0.0019, '7_3': 0.0006, '7_4': 0.0012, '7_5': 0.0012, '7_6': 0.0007
     }
 
-# todo run for all purposes, check for overfitting
+# todo check for overfitting
 
     mse = np.mean((y_true - y_pred) ** 2)
     total_penalty = 0
@@ -269,7 +269,6 @@ def generate_missing_rows(purpose_value, input_data, target_column):
     are present in the dataframe to be modelled.
 
     """
-    # Generate all possible combos
     all_combinations = pd.MultiIndex.from_product([
         range(1, 21),  # tfn_at
         range(1, 9),  # hh_type
@@ -329,7 +328,6 @@ def model_to_calculate_gamma(nhb,
     """
     start_time = time.time()
 
-    # data processing
     original_data = nhb.copy()
 
     # make feature list to use

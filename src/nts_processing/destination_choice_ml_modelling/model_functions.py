@@ -150,6 +150,7 @@ def cost_func(data):
 # predict trip rates based on diff distance travelled. grav model to have cost related func
 #
 
+
 def grav_model(gen_cost_data, x_pred, target_column, model, hyperparameters):
     # make predictions
     x_pred = x_pred.drop(columns=[target_column])
@@ -212,32 +213,12 @@ def probability_of_trip(model, best_params, data):
     return trips_calculated
 
 
-def create_base_utility_function(model, feature_names, best_params):
-    def utility(**kwargs):
-        input_data = pd.DataFrame([kwargs])
-        input_data = input_data.reindex(columns=feature_names, fill_value=0)
-        model.set_params(**best_params)
-        return model.predict(input_data)[0]
-
-
-
-    return utility
-
-
-def generate_utility_functions(model, data, best_params):
-    feature_names = data.columns.tolist()
-    utility_function = create_base_utility_function(model=model,
-                                                    feature_names=feature_names,
-                                                    best_params=best_params)
-
-    return utility_function, feature_names
-
 
 def calculate_trips(utility_function, inputs):
     utility = utility_function(**inputs)
-    # Convert utility to probability (you might want to adjust this based on your specific needs)
+    # Convert utility to probability
     probability = 1 / (1 + np.exp(-utility))
-    # Assume total trips is 1000 (adjust as needed)
+    # Assume total trips is 1000 (subject to change just testing)
     total_trips = 1000
     trips = probability * total_trips
     return trips
@@ -323,15 +304,6 @@ def feature_selection(data, target_column, model_type, output_folder, n_cores):
     print(f"Feature selected data exported to: {output_folder, 'data_post_feature_selection.csv'}")
 
     return final_data, model
-
-
-def sample_data(x, y, sample_size=10000, random_state=42):
-
-    if len(x) > sample_size:
-        np.random.seed(random_state)
-        sampled_indices = np.random.choice(len(x), size=sample_size, replace=False)
-        return x.iloc[sampled_indices], y.iloc[sampled_indices]
-    return x, y
 
 
 def simple_model_selection(x, y, models_to_test, n_jobs):
