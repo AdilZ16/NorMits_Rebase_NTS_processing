@@ -3,25 +3,14 @@
 Created on: 6/26/2024
 Original author: Adil Zaheer
 """
-import os
 
-import dill
 import numpy as np
 import pandas as pd
-import pymc as pm
-import matplotlib.pyplot as plt
-import time
-
-from sklearn.model_selection import StratifiedShuffleSplit
-from tqdm.auto import tqdm
 import os
-import joblib
-import arviz as az
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from scipy import stats
+from src.nts_processing.hierachical_bayesian_model.hierachial_bayesian_functions import create_hybrid_sample
+
 
 # pylint: disable=import-error,wrong-import-position
-# Local imports here
 # pylint: enable=import-error,wrong-import-position
 
 
@@ -130,5 +119,21 @@ def process_data_for_hierarchical_bayesian_model(df, columns_to_keep, reduce_dat
     df.to_csv(output_path, index=False)
     print('-------------------------------------------------------------')
     print(f"final_data_to_model exported to: {output_path}")
+
+    return df
+
+
+def process_cb_destination_choice(data, output_folder, columns_to_model, purpose_value):
+    print('Processing classified build')
+    df = pd.read_csv(data)
+    df = df[columns_to_model]
+    df.columns = [str(col).strip() for col in df.columns]
+    df = df[~df['mode'].isin([8, 0])]
+    df = df[df['purpose'] == purpose_value]
+
+    output_filename = 'processed_cb.csv'
+    output_path = os.path.join(output_folder, output_filename)
+    df.to_csv(output_path, index=False)
+    print('Processed classified build exported to output_folder')
 
     return df
