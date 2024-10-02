@@ -8,16 +8,15 @@ Original author: Adil Zaheer
 # pylint: enable=import-error,wrong-import-position
 import warnings
 
-import numpy as np
+from src.nts_processing.processing_classified_build.process_cb_functions import (process_cb_data_atkins_method,
+                                                                                 process_data_for_hierarchical_bayesian_model,
+                                                                                 process_cb_data_tfn_method)
 
-from src.nts_processing.AZ_code_MTS_model.process_cb_functions import (process_cb_data_atkins_method,
-                                                                       process_data_for_hierarchical_bayesian_model,
-                                                                       generate_priors,
-                                                                       predict_model_hierarchical_bayesian_model,
-                                                                       load_model_and_parameters,
-                                                                       save_model_and_parameters,
-                                                                       evaluate_model,
-                                                                       process_cb_data_tfn_method)
+from src.nts_processing.hierachical_bayesian_model.hierachial_bayesian_functions import (generate_priors,
+                                                                                 predict_model_hierarchical_bayesian_model,
+                                                                                 load_model_and_parameters,
+                                                                                 save_model_and_parameters,
+                                                                                 evaluate_model)
 
 warnings.filterwarnings("ignore")
 
@@ -33,7 +32,8 @@ def main(params):
 
         df = process_cb_data_tfn_method(data=params.data_cb,
                                         columns_to_keep=params.columns_to_keep,
-                                        output_folder=params.output_folder)
+                                        output_folder=params.output_folder,
+                                        purpose_value=params.purpose_value)
 
 
     df = process_data_for_hierarchical_bayesian_model(df=df,
