@@ -77,7 +77,6 @@ def process_cb_data_tfn_method(data, columns_to_keep, output_folder, purpose_val
     df = df[df['period'] != 0]
     df = df[~df['mode'].isin([8, 0])]
     df = df[df['purpose'] == purpose_value]
-    # df = df[~df['purpose'].isin([0, 2, 3, 4, 5, 6, 7, 8])]
 
     df_total = df.groupby(['tfn_at', 'hh_type', 'purpose', 'mode', 'period']).sum()
     df_total = df_total[['trips']].reset_index()
