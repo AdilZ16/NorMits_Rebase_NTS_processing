@@ -12,12 +12,11 @@ import time
 import joblib
 import numpy as np
 import pandas as pd
-from arviz import r2_score
 from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.metrics import mean_absolute_error, mean_squared_error, make_scorer
+from sklearn.metrics import mean_absolute_error, mean_squared_error, make_scorer, r2_score
 from sklearn.model_selection import cross_val_score, train_test_split, RepeatedKFold, RandomizedSearchCV
-from caf.ml.functions import data_pipeline_functions as dpf
-
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 class TripRate_MTS:
@@ -29,11 +28,13 @@ class TripRate_MTS:
                  columns_to_keep,
                  output_folder,
                  purpose_value,
+                 index_columns
                  ):
         self.data = data
         self.columns_to_keep = columns_to_keep
         self.output_folder = output_folder
         self.purpose_value = purpose_value
+        self.index_columns = index_columns
         print('Trip rate class is running')
 
 
@@ -42,13 +43,14 @@ class TripRate_MTS:
             data=self.data,
             columns_to_keep=self.columns_to_keep,
             output_folder=self.output_folder,
-            purpose_value=self.purpose_value
+            purpose_value=self.purpose_value,
+            index_columns=self.index_columns
         )
 
 
-def process_cb_data_tfn_method(data, columns_to_keep, output_folder, purpose_value):
+def process_cb_data_tfn_method(data, columns_to_keep, output_folder, purpose_value, index_columns):
     """
-    :param columns_to_keep_mts:
+    :param index_columns:
     :param data: data to process
     :param columns_to_keep: which columns in the data you want to keep. Columns not included will
                             still be kept, this function ensures that regardless of any data
@@ -65,7 +67,7 @@ def process_cb_data_tfn_method(data, columns_to_keep, output_folder, purpose_val
     df = df[~df['mode'].isin([8, 0])]
     df = df[df['purpose'] == purpose_value]
 
-    df_total = df.groupby(['individualid', 'tfn_at', 'hh_type', 'purpose', 'mode', 'period']).sum()
+    df_total = df.groupby(['tfn_at', 'hh_type', 'purpose', 'mode', 'period']).sum()
     df_total = df_total[['trips']].reset_index()
 
     # df_total['split_method'] = np.where(df_total.trips >= 1000, 'observed', 'TBD')
@@ -74,12 +76,7 @@ def process_cb_data_tfn_method(data, columns_to_keep, output_folder, purpose_val
     df_total['mode_period'] = df_total['mode'].astype(str) + '_' + df_total['period'].astype(str)
     df_total.columns = [str(col).strip() for col in df_total.columns]
 
-
-    output_filename = '3_processed_cb_mts_method.csv'
-    output_path = os.path.join(output_folder, output_filename)
-    df_total.to_csv(output_path, index=False)
-    print('-------------------------------------------------------------')
-    print(f"3_processed_cb_mts_method exported to: {output_path}")
+    # df_total.set_index(index_columns, inplace=True)
 
     return df_total
 
@@ -87,12 +84,13 @@ def process_cb_data_tfn_method(data, columns_to_keep, output_folder, purpose_val
 def prep_processed_data(data,
                         output_folder,
                         target_column,
-                        numerical_features,
+                        mts,
                         categorical_features,
                         index_columns,
                         drop_columns,
                         ignore_columns,
                         purpose_value):
+    data = data.apply(pd.to_numeric, errors='coerce')
 
     # make feature list to use
     if ignore_columns is None:
@@ -101,29 +99,47 @@ def prep_processed_data(data,
         features_to_use = [col for col in data.columns if col not in ignore_columns]
 
     data_ = data[features_to_use]
-
     # caf.ml index columns function
     if index_columns is not None:
-        data_ = index_sorter_modified(df=data_,
-                                      index_columns=index_columns,
-                                      drop_columns=drop_columns)
+        if not all(col in data_.index.names for col in index_columns):
+            data_ = index_sorter_modified(df=data_,
+                                          index_columns=index_columns,
+                                          drop_columns=drop_columns)
+
 
     # create all possible mts combinations to predict
-    data_final = generate_missing_rows(purpose_value=purpose_value,
-                                       input_data=data_,
-                                       target_column=target_column)
+    unencoded_data = generate_missing_rows(purpose_value=purpose_value,
+                                           input_data=data_,
+                                           target_column=target_column)
 
-    data_final.to_csv(os.path.join(output_folder, 'unencoded_data.csv'), index=True)
+    final_data_pre_encoding = generate_raw_mts(mts=mts,
+                                               processed_df=unencoded_data,
+                                               purpose_value=purpose_value,
+                                               output_folder=output_folder)
 
+    columns_to_remove = ['mode_period', 'total_trips', 'rows_added', 'trips', 'rho']
+    df_removed = final_data_pre_encoding[columns_to_remove]
+    df_remaining = final_data_pre_encoding.drop(columns_to_remove, axis=1)
 
-    # caf.ml data transformations (scale & encoding) function
-    df_final, transformations = dpf.process_data_pipeline(df=data_final,
-                                                          numerical_features=numerical_features,
-                                                          categorical_features=categorical_features,
-                                                          target_column=target_column,
-                                                          output_folder=output_folder)
+    # encode data
+    if target_column in df_remaining.columns:
+        y = df_remaining[target_column]
+        x = df_remaining.drop(columns=[target_column])
+    else:
+        y = None
+        x = df_remaining
 
-    return df_final, data_final
+    data_encoded = pd.get_dummies(x, columns=categorical_features, drop_first=True, dtype=float)
+
+    # if y is not None:
+    #     data_encoded[target_column] = y
+    # if y is not None:
+    #     y = y.reindex(data_encoded.index)
+    #     data_encoded[target_column] = y
+
+    df_combined = pd.concat([df_removed, data_encoded], axis=1)
+    df_combined.to_csv(os.path.join(output_folder, 'final_data.csv'), index=True)
+    return df_combined, final_data_pre_encoding
 
 
 def index_sorter_modified(df, index_columns, drop_columns):
@@ -172,7 +188,7 @@ def generate_missing_rows(purpose_value, input_data, target_column):
     all_combinations = pd.MultiIndex.from_product([
         range(1, 21),  # tfn_at
         range(1, 9),  # hh_type
-        [purpose_value], # purpose
+        [purpose_value],  # purpose
         range(1, 8),  # mode
         range(1, 7)  # period
     ], names=['tfn_at', 'hh_type', 'purpose', 'mode', 'period'])
@@ -186,6 +202,7 @@ def generate_missing_rows(purpose_value, input_data, target_column):
 
     merged_data['rows_added'] = merged_data[target_column].isna()
     merged_data = merged_data.drop(columns='mode_period')
+    merged_data = merged_data.rename(columns={'mode_period_new': 'mode_period'})
     return merged_data
 
 
@@ -193,19 +210,20 @@ def custom_loss_mts(y_true,
                     y_pred,
                     mode_period_values,
                     rows_added,
+                    rho,
                     weight_ratio=5,
                     weight_sample=1,
                     weight_artificial=2):
 
-    mode_period_grid = {
-        '1_1': 0.0773, '1_2': 0.0755, '1_3': 0.0258, '1_4': 0.0179, '1_5': 0.0302, '1_6': 0.0275,
-        '2_1': 0.0063, '2_2': 0.0039, '2_3': 0.0016, '2_4': 0.0021, '2_5': 0.0019, '2_6': 0.0017,
-        '3_1': 0.1739, '3_2': 0.1502, '3_3': 0.0644, '3_4': 0.0596, '3_5': 0.0914, '3_6': 0.0722,
-        '4_1': 0.0063, '4_2': 0.0021, '4_3': 0.0012, '4_4': 0.0028, '4_5': 0.0020, '4_6': 0.0014,
-        '5_1': 0.0292, '5_2': 0.0216, '5_3': 0.0030, '5_4': 0.0042, '5_5': 0.0087, '5_6': 0.0038,
-        '6_1': 0.0096, '6_2': 0.0029, '6_3': 0.0007, '6_4': 0.0030, '6_5': 0.0021, '6_6': 0.0008,
-        '7_1': 0.0057, '7_2': 0.0019, '7_3': 0.0006, '7_4': 0.0012, '7_5': 0.0012, '7_6': 0.0007
-    }
+    # mode_period_grid = {
+    #     '1_1': 0.0773, '1_2': 0.0755, '1_3': 0.0258, '1_4': 0.0179, '1_5': 0.0302, '1_6': 0.0275,
+    #     '2_1': 0.0063, '2_2': 0.0039, '2_3': 0.0016, '2_4': 0.0021, '2_5': 0.0019, '2_6': 0.0017,
+    #     '3_1': 0.1739, '3_2': 0.1502, '3_3': 0.0644, '3_4': 0.0596, '3_5': 0.0914, '3_6': 0.0722,
+    #     '4_1': 0.0063, '4_2': 0.0021, '4_3': 0.0012, '4_4': 0.0028, '4_5': 0.0020, '4_6': 0.0014,
+    #     '5_1': 0.0292, '5_2': 0.0216, '5_3': 0.0030, '5_4': 0.0042, '5_5': 0.0087, '5_6': 0.0038,
+    #     '6_1': 0.0096, '6_2': 0.0029, '6_3': 0.0007, '6_4': 0.0030, '6_5': 0.0021, '6_6': 0.0008,
+    #     '7_1': 0.0057, '7_2': 0.0019, '7_3': 0.0006, '7_4': 0.0012, '7_5': 0.0012, '7_6': 0.0007
+    # }
 
     total_ratio_penalty = 0
     total_sample_penalty = 0
@@ -213,10 +231,14 @@ def custom_loss_mts(y_true,
 
     total_pred = np.sum(y_pred)
     total_true = np.sum(y_true)
-
-    for y_t, y_p, mode_period, row_added in zip(y_true, y_pred, mode_period_values, rows_added):
+    # double check how rho is calculated, and artificial is only one that really uses ypred and ytrue
+    # rho = total trips by m and time period / total trips without mode and time period
+    # percentage for that segmentation that will use that mode and time period
+    # where sample is higher, it should be closer to observed value and vice and versa 
+    for y_t, y_p, mode_period, row_added, target_ratio in zip(y_true, y_pred,
+                                                              mode_period_values, rows_added,
+                                                              rho):
         # Ratio penalty
-        target_ratio = mode_period_grid[mode_period]
         actual_ratio = y_p / total_pred
         ratio_penalty = (actual_ratio - target_ratio) ** 2
         total_ratio_penalty += ratio_penalty
@@ -303,10 +325,13 @@ def mts_predict(df,
     original_data = df.copy()
 
     # prep data for modelling
+    non_predictive_columns = ['rho', 'mode_period', 'trips', 'rows_added']
+    df_removed = df[non_predictive_columns]
     df[target_column] = df[target_column].fillna(0)
+
     y_log = np.log1p(df[target_column])
     y_non_log = df[target_column]
-    x = df.drop(columns=[target_column])
+    x = df.drop(columns=[target_column] + non_predictive_columns)
 
 
     train_index, test_index = train_test_split(range(len(x)), test_size=0.2, random_state=42)
@@ -316,9 +341,10 @@ def mts_predict(df,
 
     # creating custom loss function
     custom_scorer_loss_func = None
-    mode_period_values = unencoded_df['mode_period_new'].tolist()
-    custom_scorer_loss_func = make_scorer(lambda y_true, y_pred: custom_loss_mts(y_true, y_pred,
-                                                                                 mode_period_values),
+    mode_period_values = unencoded_df['mode_period'].tolist()
+    rho_values = unencoded_df['rho'].tolist()
+    rows_added = unencoded_df['rows_added'].tolist()
+    custom_scorer_loss_func = make_scorer(lambda y_true, y_pred: custom_loss_mts(y_true, y_pred, mode_period_values, rows_added, rho_values),
                                           greater_is_better=False)
 
 
@@ -344,16 +370,14 @@ def mts_predict(df,
 
     ## PREDICTION ##
     # LOG + FORCE POSITIVE
-    X_all = df.drop(columns=[target_column])
+    X_all = df.drop(columns=[target_column] + non_predictive_columns)
     y_pred_non_log = np.exp(model.predict(X_all))
-    y_pred_log = model.predict(X_all)
     y_pred_non_log_excluding_generated_rows = np.exp(model.predict(x))
     y_pred_log_excluding_generated_rows = model.predict(x)
 
-    mode_period_values = unencoded_df['mode_period'].tolist()
 
     # calculate gamma from predicted values
-    gamma_pred = y_pred_non_log / original_data['trips.hb']
+    gamma_pred = y_pred_non_log / original_data['trips']
     final_df = unencoded_df.copy()
     final_df['predicted_trips'] = y_pred_non_log
     final_df['predicted_gamma'] = gamma_pred
@@ -392,6 +416,8 @@ def mts_predict(df,
     metrics_df = pd.DataFrame([metrics_dict])
     metrics_df.to_csv(os.path.join(output_folder, 'model_evaluation_metrics.csv'), index=True)
 
+    plots(y_non_log, y_pred_non_log_excluding_generated_rows, output_folder)
+
     print(f"Results saved to {output_folder}")
     end_time = time.time()
     print(f"Total run time: {end_time - start_time:.2f} seconds")
@@ -405,3 +431,44 @@ def mts_predict(df,
         print(f"Model saved to {model_filename}")
 
     return final_df
+
+
+def generate_raw_mts(mts, purpose_value, processed_df, output_folder):
+    df = pd.read_csv(mts)
+    df = df[df['period'] != 0]
+    df = df[~df['mode'].isin([8, 0])]
+    df = df[df['purpose'] == purpose_value]
+    df = df.reset_index(drop=True)
+    df['mode_period'] = df['mode'].astype(str) + '_' + df['period'].astype(str)
+    df.columns = [str(col).strip() for col in df.columns]
+
+    df_final = pd.merge(processed_df, df, how='left', on=['tfn_at', 'hh_type',
+                                                          'purpose', 'mode',
+                                                          'period', 'mode_period'])
+
+
+    df_final.to_csv(os.path.join(output_folder, 'final_data_pre_encoding.csv'), index=False)
+
+    return df_final
+
+
+def plots(y_non_log, y_pred_non_log_excluding_generated_rows, output_folder):
+    residuals = y_non_log - y_pred_non_log_excluding_generated_rows
+    sns.histplot(residuals, kde=True)
+    plt.title('Distribution of Residuals')
+    plt.xlabel('Residuals')
+    plt.ylabel('Frequency')
+    plt.savefig(os.path.join(output_folder, 'residuals_distribution.png'))
+    plt.close()
+
+    sns.boxplot(x=residuals)
+    plt.title('Boxplot of Residuals')
+    plt.savefig(os.path.join(output_folder, 'residuals_boxplot.png'))
+    plt.close()
+
+    sns.regplot(x=y_non_log, y=y_pred_non_log_excluding_generated_rows, line_kws={"color": "red"})
+    plt.xlabel('Actual')
+    plt.ylabel('Predicted')
+    plt.title('Actual vs Predicted Values')
+    plt.savefig(os.path.join(output_folder, 'actual_vs_predicted.png'))
+    plt.close()

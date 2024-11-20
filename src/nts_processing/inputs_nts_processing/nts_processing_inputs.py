@@ -39,7 +39,6 @@ class NTS_mts_inputs_AZ_model(BaseConfig):
 
 class MTS_inputs(BaseConfig):
     data: Optional[Path] = None
-    data_skip_cb_generation: Optional[Path] = None
     columns_to_keep: Optional[List[str]] = None
     output_folder: Optional[Path] = None
     target_column: Optional[str] = None
@@ -49,6 +48,8 @@ class MTS_inputs(BaseConfig):
     drop_columns: Optional[List[str]] = None
     ignore_columns: Optional[List[str]] = None
     purpose_value: Optional[int] = None
+    mts: Optional[Path] = None
+
 
 
 class destination_choice_inputs(BaseConfig):
